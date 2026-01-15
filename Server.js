@@ -1,4 +1,5 @@
 const express = require("express");
+const { createClient } = require("redis");
 
 async function start() {
     const redis = createClient({
@@ -33,8 +34,7 @@ async function start() {
 
         const user = JSON.parse(rawUser);
         const now = Date.now();
-        const UPDATE_INTERVAL = 5000; 
-
+        const UPDATE_INTERVAL = 5000;
 
         if (user.lastShopUpdate && now - user.lastShopUpdate < UPDATE_INTERVAL) {
             return res.json({
@@ -59,6 +59,10 @@ async function start() {
             shopSeed: shop.seed,
             heroes: shop.heroes
         });
+    });
+    
+    app.listen(3000, () => {
+        console.log("🚀 Server started on http://localhost:3000");
     });
     
     function generateShop(userId) {
@@ -106,3 +110,6 @@ async function start() {
         }
         return h >>> 0;
     }
+}
+
+start();
