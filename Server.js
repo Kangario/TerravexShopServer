@@ -17,7 +17,7 @@ async function start() {
 
     const app = express();
     app.use(express.json());
-    
+
     app.post("/shop/update", async (req, res) => {
         const { userId } = req.body;
 
@@ -35,22 +35,23 @@ async function start() {
         const user = JSON.parse(rawUser);
         const now = Date.now();
         const UPDATE_INTERVAL = 6000 * 100;
-
+        
         if (user.lastShopUpdate && now - user.lastShopUpdate < UPDATE_INTERVAL) {
+            const shop = generateShopFromSeed(user.shopSeed);
+
             return res.json({
                 ok: true,
                 fromCache: true,
                 shopSeed: user.shopSeed,
-                heroes: user.shopItems
+                heroes: shop.heroes
             });
         }
-
+        
         const shop = generateShop(userId);
 
         user.lastShopUpdate = now;
         user.shopSeed = shop.seed;
-        user.shopItems = shop.heroes;
-
+        
         await redis.set(userKey, JSON.stringify(user));
 
         res.json({
@@ -60,6 +61,7 @@ async function start() {
             heroes: shop.heroes
         });
     });
+
     
     app.listen(3000, () => {
         console.log("🚀 Server started on http://localhost:3000");
