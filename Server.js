@@ -34,7 +34,7 @@ async function start() {
 
         const user = JSON.parse(rawUser);
         const now = Date.now();
-        const UPDATE_INTERVAL = 5000;
+        const UPDATE_INTERVAL = 6000 * 100;
 
         if (user.lastShopUpdate && now - user.lastShopUpdate < UPDATE_INTERVAL) {
             return res.json({
