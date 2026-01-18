@@ -35,7 +35,7 @@ async function start() {
 
             const user = JSON.parse(rawUser);
             const now = Date.now();
-            const UPDATE_INTERVAL = 6000 ;
+            const UPDATE_INTERVAL = 6000 *100;
             
             if (
                 user.lastShopUpdate &&
