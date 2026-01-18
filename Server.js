@@ -19,48 +19,58 @@ async function start() {
     app.use(express.json());
 
     app.post("/shop/update", async (req, res) => {
-        const { userId } = req.body;
+        try {
+            const { userId } = req.body;
 
-        if (!userId) {
-            return res.status(400).json({ error: "userId required" });
-        }
+            if (!userId) {
+                return res.status(400).json({ error: "userId required" });
+            }
 
-        const userKey = `user:${userId}`;
-        const rawUser = await redis.get(userKey);
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
 
-        if (!rawUser) {
-            return res.status(404).json({ error: "User not found" });
-        }
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
 
-        const user = JSON.parse(rawUser);
-        const now = Date.now();
-        const UPDATE_INTERVAL = 6000 * 100;
-        
-        if (user.lastShopUpdate && now - user.lastShopUpdate < UPDATE_INTERVAL) {
-            const shop = generateShopFromSeed(user.shopSeed);
+            const user = JSON.parse(rawUser);
+            const now = Date.now();
+            const UPDATE_INTERVAL = 6000 * 100;
+            
+            if (
+                user.lastShopUpdate &&
+                user.cachedShop &&
+                now - user.lastShopUpdate < UPDATE_INTERVAL
+            ) {
+                return res.json({
+                    ...user.cachedShop,
+                    fromCache: true
+                });
+            }
+            
+            const shop = generateShop(userId);
 
-            return res.json({
+            const shopResponse = {
                 ok: true,
-                fromCache: true,
-                shopSeed: user.shopSeed,
+                fromCache: false,
+                shopSeed: shop.seed,
                 heroes: shop.heroes
-            });
+            };
+            
+            user.lastShopUpdate = now;
+            user.shopSeed = shop.seed;
+            user.cachedShop = shopResponse;
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json(shopResponse);
+
+        } catch (err) {
+            console.error("[Shop] Internal error:", err);
+            return res.status(500).json({ error: "Internal server error" });
         }
-        
-        const shop = generateShop(userId);
-
-        user.lastShopUpdate = now;
-        user.shopSeed = shop.seed;
-        
-        await redis.set(userKey, JSON.stringify(user));
-
-        res.json({
-            ok: true,
-            fromCache: false,
-            shopSeed: shop.seed,
-            heroes: shop.heroes
-        });
     });
+
 
     
     app.listen(3000, () => {
