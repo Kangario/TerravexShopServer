@@ -61,7 +61,7 @@ async function start() {
 
             const heroes = [];
             for (let i = 0; i < 6; i++) {
-                heroes.push(generateHero(rng, i));
+                heroes.push(generateHero(rng, i, shopSeed));
             }
 
             const shopResponse = {
@@ -81,10 +81,15 @@ async function start() {
 
     app.post("/shop/buy", async (req, res) => {
         try {
-            const { userId, heroIndex } = req.body;
+            const { userId, heroId } = req.body;
 
-            if (!userId || heroIndex === undefined) {
-                return res.status(400).json({ error: "userId and heroIndex required" });
+            if (!userId || heroId === undefined) {
+                return res.status(400).json({ error: "userId and heroId required" });
+            }
+
+            const parsedHeroId = Number(heroId);
+            if (!Number.isInteger(parsedHeroId)) {
+                return res.status(400).json({ error: "Invalid heroId" });
             }
 
             const userKey = `user:${userId}`;
@@ -100,22 +105,45 @@ async function start() {
                 return res.status(400).json({ error: "Shop not generated yet" });
             }
 
-            // 🔁 Восстанавливаем магазин по сидy
+            const now = Date.now();
+            const UPDATE_INTERVAL = 6000 * 100;
+
+            if (
+                !user.lastShopUpdate ||
+                now - user.lastShopUpdate > UPDATE_INTERVAL
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Shop expired, please refresh shop"
+                });
+            }
+
+            const alreadyBought = user.heroesBought?.some(h => h.Id === parsedHeroId);
+            if (alreadyBought) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Hero already bought"
+                });
+            }
+
+            // 🔁 Восстанавливаем магазин по сиду
             const rng = mulberry32(user.shopSeed);
 
-            const heroes = [];
+            let foundHero = null;
+
             for (let i = 0; i < 6; i++) {
-                heroes.push(generateHero(rng, i));
+                const hero = generateHero(rng, i, user.shopSeed);
+                if (hero.Id === parsedHeroId) {
+                    foundHero = hero;
+                    break;
+                }
             }
 
-            const hero = heroes[heroIndex];
-
-            if (!hero) {
-                return res.status(400).json({ error: "Invalid heroIndex" });
+            if (!foundHero) {
+                return res.status(400).json({ error: "Hero not found in current shop" });
             }
 
-            // 💰 Цена героя (можешь поменять формулу)
-            const price = calculateHeroPrice(hero);
+            const price = calculateHeroPrice(foundHero);
 
             if (user.gold < price) {
                 return res.status(400).json({
@@ -134,20 +162,17 @@ async function start() {
             }
 
             user.heroesBought.push({
-                ...hero,
+                ...foundHero,
+                InstanceId: crypto.randomUUID(),
                 boughtAt: Date.now(),
                 price
             });
-
-            // 🧹 (опционально) сброс магазина после покупки
-            // user.shopSeed = null;
-            // user.lastShopUpdate = null;
 
             await redis.set(userKey, JSON.stringify(user));
 
             return res.json({
                 ok: true,
-                hero,
+                hero: foundHero,
                 price,
                 goldLeft: user.gold
             });
@@ -157,8 +182,6 @@ async function start() {
             return res.status(500).json({ error: "Internal server error" });
         }
     });
-
-
 
     
     app.listen(3000, () => {
@@ -185,14 +208,16 @@ async function start() {
 
         const heroes = [];
         for (let i = 0; i < 6; i++) {
-            heroes.push(generateHero(rng, i));
+            heroes.push(generateHero(rng, i, seed));
         }
 
         return { seed, heroes };
     }
 
-    function generateHero(rng, index) {
+    function generateHero(rng, index, shopSeed) {
+        const heroId = hashSeed(`${shopSeed}:${index}`);
         return {
+            Id: heroId,
             Name: `Hero_${index}`,
             TypeClass: Math.floor(rng() * 4),
             Hp: Math.floor(80 + rng() * 70),
