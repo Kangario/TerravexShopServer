@@ -79,12 +79,105 @@ async function start() {
         }
     });
 
+    app.post("/shop/buy", async (req, res) => {
+        try {
+            const { userId, heroIndex } = req.body;
+
+            if (!userId || heroIndex === undefined) {
+                return res.status(400).json({ error: "userId and heroIndex required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!user.shopSeed) {
+                return res.status(400).json({ error: "Shop not generated yet" });
+            }
+
+            // 🔁 Восстанавливаем магазин по сидy
+            const rng = mulberry32(user.shopSeed);
+
+            const heroes = [];
+            for (let i = 0; i < 6; i++) {
+                heroes.push(generateHero(rng, i));
+            }
+
+            const hero = heroes[heroIndex];
+
+            if (!hero) {
+                return res.status(400).json({ error: "Invalid heroIndex" });
+            }
+
+            // 💰 Цена героя (можешь поменять формулу)
+            const price = calculateHeroPrice(hero);
+
+            if (user.gold < price) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Not enough gold",
+                    requiredGold: price,
+                    currentGold: user.gold
+                });
+            }
+
+            // ✅ Покупка
+            user.gold -= price;
+
+            if (!Array.isArray(user.heroesBought)) {
+                user.heroesBought = [];
+            }
+
+            user.heroesBought.push({
+                ...hero,
+                boughtAt: Date.now(),
+                price
+            });
+
+            // 🧹 (опционально) сброс магазина после покупки
+            // user.shopSeed = null;
+            // user.lastShopUpdate = null;
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                hero,
+                price,
+                goldLeft: user.gold
+            });
+
+        } catch (err) {
+            console.error("[Shop] Buy error:", err);
+            return res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
 
 
     
     app.listen(3000, () => {
         console.log("🚀 Server started on http://localhost:3000");
     });
+
+    function calculateHeroPrice(hero) {
+        let price = 50;
+
+        price += hero.Hp * 0.2;
+        price += hero.DamageP * 1.5;
+        price += hero.DamageM * 1.5;
+        price += hero.DefenceP * 0.5;
+        price += hero.DefenceM * 0.5;
+        price += hero.Speed * 0.3;
+        price += hero.AttackSpeed * 0.4;
+
+        return Math.floor(price);
+    }
     
     function generateShop(userId) {
         const seed = hashSeed(userId + Date.now());
