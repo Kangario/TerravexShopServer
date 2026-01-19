@@ -35,33 +35,41 @@ async function start() {
 
             const user = JSON.parse(rawUser);
             const now = Date.now();
-            const UPDATE_INTERVAL = 6000 *100;
+            const UPDATE_INTERVAL = 6000 * 100;
+
+            let shopSeed;
+            let fromCache = false;
             
             if (
                 user.lastShopUpdate &&
-                user.cachedShop &&
+                user.shopSeed &&
                 now - user.lastShopUpdate < UPDATE_INTERVAL
             ) {
-                return res.json({
-                    ...user.cachedShop,
-                    fromCache: true
-                });
+                shopSeed = user.shopSeed;
+                fromCache = true;
+            }
+            else {
+                shopSeed = hashSeed(userId + Date.now());
+
+                user.lastShopUpdate = now;
+                user.shopSeed = shopSeed;
+
+                await redis.set(userKey, JSON.stringify(user));
             }
             
-            const shop = generateShop(userId);
+            const rng = mulberry32(shopSeed);
+
+            const heroes = [];
+            for (let i = 0; i < 6; i++) {
+                heroes.push(generateHero(rng, i));
+            }
 
             const shopResponse = {
                 ok: true,
-                fromCache: false,
-                shopSeed: shop.seed,
-                heroes: shop.heroes
+                fromCache,
+                shopSeed,
+                heroes
             };
-            
-            user.lastShopUpdate = now;
-            user.shopSeed = shop.seed;
-            user.cachedShop = shopResponse;
-
-            await redis.set(userKey, JSON.stringify(user));
 
             return res.json(shopResponse);
 
@@ -70,6 +78,7 @@ async function start() {
             return res.status(500).json({ error: "Internal server error" });
         }
     });
+
 
 
     
