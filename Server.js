@@ -59,10 +59,21 @@ async function start() {
             
             const rng = mulberry32(shopSeed);
 
+            const boughtIds = new Set(
+                (user.heroesBought || []).map(h => h.Id)
+            );
+
             const heroes = [];
             for (let i = 0; i < 6; i++) {
-                heroes.push(generateHero(rng, i, shopSeed));
+                const hero = generateHero(rng, i, shopSeed);
+                
+                if (boughtIds.has(hero.Id)) {
+                    continue;
+                }
+
+                heroes.push(hero);
             }
+
 
             const shopResponse = {
                 ok: true,
@@ -183,7 +194,41 @@ async function start() {
         }
     });
 
-    
+    app.post("/shop/bought", async (req, res) => {
+        try {
+            const { userId } = req.body;
+
+            if (!userId) {
+                return res.status(400).json({ error: "userId required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            const heroesBought = Array.isArray(user.heroesBought)
+                ? user.heroesBought
+                : [];
+
+            return res.json({
+                ok: true,
+                count: heroesBought.length,
+                heroes: heroesBought
+            });
+
+        } catch (err) {
+            console.error("[Shop] Bought error:", err);
+            return res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
+
+
     app.listen(3000, () => {
         console.log("🚀 Server started on http://localhost:3000");
     });
