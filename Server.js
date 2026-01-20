@@ -329,6 +329,39 @@ async function start() {
             });
         }
     });
+    
+    app.post("/hero/equipment", async (req, res) => {
+        try {
+            const { userId } = req.body;
+
+            if (!userId) {
+                return res.status(400).json({ error: "userId required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            const equipmentHeroes = Array.isArray(user.equipmentHeroes)
+                ? user.equipmentHeroes
+                : [];
+
+            return res.json({
+                ok: true,
+                count: equipmentHeroes.length,
+                heroes: equipmentHeroes
+            });
+
+        } catch (err) {
+            console.error("[Hero] Equipment list error:", err);
+            return res.status(500).json({ error: "Internal server error" });
+        }
+    });
 
 
 
