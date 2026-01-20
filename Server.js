@@ -227,6 +227,110 @@ async function start() {
         }
     });
 
+    app.post("/hero/equip", async (req, res) => {
+        try {
+            const { userId, instanceId } = req.body;
+
+            if (!userId || !instanceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "userId and instanceId required"
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found"
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!Array.isArray(user.heroesBought)) {
+                user.heroesBought = [];
+            }
+
+            if (!Array.isArray(user.equipmentHeroes)) {
+                user.equipmentHeroes = [];
+            }
+
+            // =====================================================
+            // 1️⃣ ЗАПРЕТ ЭКИПИРОВАТЬ ОДНОГО И ТОГО ЖЕ ГЕРОЯ ДВАЖДЫ
+            // =====================================================
+            const alreadyEquipped = user.equipmentHeroes.some(
+                h => h.InstanceId === instanceId
+            );
+
+            if (alreadyEquipped) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Hero already equipped"
+                });
+            }
+
+            // =====================================================
+            // 2️⃣ ОГРАНИЧЕНИЕ СЛОТОВ ЭКИПИРОВКИ (например, 3)
+            // =====================================================
+            const MAX_EQUIPPED = 6;
+
+            if (user.equipmentHeroes.length >= MAX_EQUIPPED) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "No free equipment slots",
+                    maxSlots: MAX_EQUIPPED
+                });
+            }
+
+            // =====================================================
+            // 🔍 ИЩЕМ ГЕРОЯ В heroesBought ПО InstanceId
+            // =====================================================
+            const heroIndex = user.heroesBought.findIndex(
+                h => h.InstanceId === instanceId
+            );
+
+            if (heroIndex === -1) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Hero with this InstanceId not found in heroesBought"
+                });
+            }
+
+            // =====================================================
+            // 🧲 ВЫНИМАЕМ ГЕРОЯ ИЗ КУПЛЕННЫХ
+            // =====================================================
+            const [equippedHero] = user.heroesBought.splice(heroIndex, 1);
+
+            // =====================================================
+            // ⚔️ КЛАДЁМ В ЭКИПИРОВАННЫЕ
+            // =====================================================
+            user.equipmentHeroes.push({
+                ...equippedHero,
+                equippedAt: Date.now()
+            });
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                message: "Hero equipped successfully",
+                hero: equippedHero,
+                equipmentHeroes: user.equipmentHeroes
+            });
+
+        } catch (err) {
+            console.error("[Hero] Equip error:", err);
+            return res.status(500).json({
+                ok: false,
+                error: "Internal server error"
+            });
+        }
+    });
+
+
 
 
     app.listen(3000, () => {
