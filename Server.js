@@ -63,6 +63,10 @@ async function start() {
                 (user.heroesBought || []).map(h => h.Id)
             );
 
+            const equippedIds = new Set(
+                (user.equipmentHeroes || []).map(h => h.Id)
+            );
+
             const heroes = [];
             for (let i = 0; i < 6; i++) {
                 const hero = generateHero(rng, i, shopSeed);
@@ -70,9 +74,14 @@ async function start() {
                 if (boughtIds.has(hero.Id)) {
                     continue;
                 }
+                
+                if (equippedIds.has(hero.Id)) {
+                    continue;
+                }
 
                 heroes.push(hero);
             }
+
 
 
             const shopResponse = {
