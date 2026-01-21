@@ -354,7 +354,7 @@ async function start() {
             return res.json({
                 ok: true,
                 count: equipmentHeroes.length,
-                heroes: equipmentHeroes
+                equipmentHeroes: equipmentHeroes
             });
 
         } catch (err) {
