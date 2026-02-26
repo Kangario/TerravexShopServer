@@ -381,14 +381,19 @@ async function start() {
 
     function calculateHeroPrice(hero) {
         let price = 50;
-
-        price += hero.Hp * 0.2;
-        price += hero.DamageP * 1.5;
-        price += hero.DamageM * 1.5;
-        price += hero.DefenceP * 0.5;
-        price += hero.DefenceM * 0.5;
-        price += hero.Speed * 0.3;
-        price += hero.AttackSpeed * 0.4;
+        
+        price += hero.HpMax * 0.15;
+        price += hero.DefenceP * 0.6;
+        price += hero.DefenceM * 0.6;
+        
+        price += hero.DamageP * 1.2;
+        price += hero.DamageM * 1.2;
+        
+        price += hero.AttackRange * 15;
+        price += hero.Initiative * 0.5;
+        
+        price += hero.MaxAP * 20;
+        price += (2 - hero.MoveCost) * 10;
 
         return Math.floor(price);
     }
@@ -410,16 +415,36 @@ async function start() {
         return {
             Id: heroId,
             Name: `Hero_${index}`,
-            TypeClass: Math.floor(rng() * 4),
-            Hp: Math.floor(80 + rng() * 70),
-            DamageP: Math.floor(10 + rng() * 20),
-            DamageM: Math.floor(10 + rng() * 20),
+
+            Gender: Math.floor(rng() * 2),
+            DeathCharges: 3,
+            Lvl: 1,
+            Xp: 0,
+            Initiative: Math.floor(40 + rng() * 60),
+
+            HpMax: Math.floor(80 + rng() * 70),
             DefenceP: Math.floor(rng() * 40),
             DefenceM: Math.floor(rng() * 40),
-            Speed: Math.floor(50 + rng() * 50),
-            AttackSpeed: Math.floor(10 + rng() * 30),
-            Lvl: 1,
-            Xp: 0
+            
+            DamageP: Math.floor(10 + rng() * 20),
+            DamageM: Math.floor(10 + rng() * 20),
+            
+            AttackRange: 1,
+            MoveCost: 2,
+            MaxAP: 6,
+            
+            Skills: [],
+            EquipmentSlots: {
+                Weapon: {
+                    LeftHand: null,
+                    RightHand: null
+                },
+                Armor:{
+                    Head: null,
+                    Body: null,
+                    Legs: null
+                }
+            }
         };
     }
 
