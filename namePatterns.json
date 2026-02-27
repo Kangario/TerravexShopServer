@@ -1,0 +1,17 @@
+{
+  "human": {
+    "prefix": ["Al", "Dar", "Mar", "Val", "Cor", "Ser"],
+    "root": ["an", "or", "eth", "ius", "ar", "en"],
+    "suffix": ["", "son", "mir", "dor", "th"]
+  },
+  "elf": {
+    "prefix": ["Ae", "Li", "Tha", "Syl", "Eri"],
+    "root": ["lora", "rian", "mir", "thel", "nor"],
+    "suffix": ["el", "is", "or", "wyn"]
+  },
+  "orc": {
+    "prefix": ["Gor", "Thr", "Mak", "Zug"],
+    "root": ["ash", "mok", "ruk", "gar"],
+    "suffix": ["", "zug", "nak"]
+  }
+}

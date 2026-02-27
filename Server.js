@@ -1,5 +1,6 @@
 const express = require("express");
 const { createClient } = require("redis");
+const namePatterns = require("./namePatterns.json");
 
 async function start() {
     const redis = createClient({
@@ -412,9 +413,12 @@ async function start() {
 
     function generateHero(rng, index, shopSeed) {
         const heroId = hashSeed(`${shopSeed}:${index}`);
+        const races = ["human", "elf", "orc"];
+        const race = races[Math.floor(rng() * races.length)];
+        const name = generateName(rng, race);
         return {
             Id: heroId,
-            Name: `Hero_${index}`,
+            Name: name,
 
             Gender: Math.floor(rng() * 2),
             DeathCharges: 3,
@@ -465,6 +469,21 @@ async function start() {
         }
         return h >>> 0;
     }
+    
+    function generateName(rng, race) {
+        const patterns = namePatterns[race];
+
+        const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+
+        const prefix = pick(patterns.prefix);
+        const root = pick(patterns.root);
+        const suffix = pick(patterns.suffix);
+
+        const name = prefix + root + suffix;
+
+        return name.charAt(0).toUpperCase() + name.slice(1);
+    }
 }
+
 
 start();
