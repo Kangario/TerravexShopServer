@@ -374,6 +374,74 @@ async function start() {
     });
 
 
+    app.post("/hero/unequip", async (req, res) => {
+        try {
+            const { userId, instanceId } = req.body;
+
+            if (!userId || !instanceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "userId and instanceId required"
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found"
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!Array.isArray(user.heroesBought)) {
+                user.heroesBought = [];
+            }
+            if (!Array.isArray(user.equipmentHeroes)) {
+                user.equipmentHeroes = [];
+            }
+
+            const equipIndex = user.equipmentHeroes.findIndex(
+                h => h.InstanceId === instanceId
+            );
+
+            if (equipIndex === -1) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Hero with this InstanceId not found in equipmentHeroes"
+                });
+            }
+
+            const [unequippedHero] = user.equipmentHeroes.splice(equipIndex, 1);
+
+            // чтобы не копить служебное поле
+            delete unequippedHero.equippedAt;
+
+            user.heroesBought.push(unequippedHero);
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                message: "Hero unequipped successfully",
+                hero: unequippedHero,
+                heroes: user.heroesBought,
+                equipmentHeroes: user.equipmentHeroes
+            });
+        } catch (err) {
+            console.error("[Hero] Unequip error:", err);
+            return res.status(500).json({
+                ok: false,
+                error: "Internal server error"
+            });
+        }
+    });
+
+
+
 
 
     app.listen(3000, () => {
