@@ -440,7 +440,34 @@ async function start() {
         }
     });
 
+    app.post("/user/resources", async (req, res) => {
+        try {
+            const { userId } = req.body;
 
+            if (!userId) {
+                return res.status(400).json({ error: "userId required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            return res.json({
+                ok: true,
+                userId,
+                gold: user.gold ?? 0,
+                rating: user.rating ?? 0
+            });
+        } catch (err) {
+            console.error("[User] Resources error:", err);
+            return res.status(500).json({ error: "Internal server error" });
+        }
+    });
 
 
 
