@@ -521,7 +521,7 @@ async function start() {
             Xp: 0,
             Initiative: Math.floor(40 + rng() * 60),
 
-            HpMax: Math.floor(80 + rng() * 70),
+            HpMax: Math.floor(8 + rng() * 7),
             DefenceP: Math.floor(rng() * 40),
             DefenceM: Math.floor(rng() * 40),
             
