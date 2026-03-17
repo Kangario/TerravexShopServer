@@ -528,7 +528,7 @@ async function start() {
             DamageP: Math.floor(10 + rng() * 20),
             DamageM: Math.floor(10 + rng() * 20),
             
-            AttackRange: 1,
+            AttackRange: Math.floor(rng() * 10) + 1,
             MoveCost: Math.floor(rng() * 3) + 1,
             MaxAP: 6,
             
