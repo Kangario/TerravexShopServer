@@ -440,6 +440,84 @@ async function start() {
         }
     });
 
+    app.post("/hero/xp", async (req, res) => {
+        try {
+            const { userId, instanceId, xp } = req.body;
+
+            if (!userId || !instanceId || xp === undefined) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "userId, instanceId and xp required"
+                });
+            }
+
+            const xpToAdd = Number(xp);
+            if (!Number.isFinite(xpToAdd) || xpToAdd <= 0) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "xp must be a positive number"
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found"
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!Array.isArray(user.heroesBought)) {
+                user.heroesBought = [];
+            }
+
+            if (!Array.isArray(user.equipmentHeroes)) {
+                user.equipmentHeroes = [];
+            }
+
+            let hero = user.heroesBought.find(h => h.InstanceId === instanceId);
+            let location = "heroesBought";
+
+            if (!hero) {
+                hero = user.equipmentHeroes.find(h => h.InstanceId === instanceId);
+                location = "equipmentHeroes";
+            }
+
+            if (!hero) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Hero with this InstanceId not found"
+                });
+            }
+
+            const progress = addHeroXp(hero, xpToAdd);
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                location,
+                hero,
+                xpAdded: xpToAdd,
+                leveledUp: progress.leveledUp,
+                previousLevel: progress.previousLevel,
+                currentLevel: hero.Lvl,
+                currentXp: hero.Xp,
+                nextLevelXpRequired: getHeroLevelUpXpRequired(hero.Lvl)
+            });
+        } catch (err) {
+            console.error("[Hero] XP error:", err);
+            return res.status(500).json({
+                ok: false,
+                error: "Internal server error"
+            });
+        }
+    });
+
     app.post("/user/resources", async (req, res) => {
         try {
             const { userId } = req.body;
@@ -544,6 +622,47 @@ async function start() {
                     Legs: null
                 }
             }
+        };
+    }
+
+    function getHeroLevelUpXpRequired(level) {
+        return 50 * level;
+    }
+
+    function addHeroXp(hero, xpToAdd) {
+        if (!Number.isFinite(hero.Lvl) || hero.Lvl < 1) {
+            hero.Lvl = 1;
+        }
+
+        if (!Number.isFinite(hero.Xp) || hero.Xp < 0) {
+            hero.Xp = 0;
+        }
+
+        hero.Xp += Math.floor(xpToAdd);
+
+        const previousLevel = hero.Lvl;
+        const xpRequired = getHeroLevelUpXpRequired(hero.Lvl);
+        let leveledUp = false;
+
+        if (hero.Xp >= xpRequired) {
+            hero.Lvl += 1;
+            hero.Xp = 0;
+            hero.HpMax = (hero.HpMax ?? 0) + 50;
+            hero.DamageP = (hero.DamageP ?? 0) + 25;
+            hero.DamageM = (hero.DamageM ?? 0) + 25;
+            hero.MoveCost = (hero.MoveCost ?? 0) + 1;
+            hero.AttackRange = (hero.AttackRange ?? 0) + 1;
+
+            if (Number.isFinite(hero.Hp)) {
+                hero.Hp += 50;
+            }
+
+            leveledUp = true;
+        }
+
+        return {
+            leveledUp,
+            previousLevel
         };
     }
 
