@@ -225,9 +225,22 @@ async function start() {
                 ? user.heroesBought
                 : [];
 
+            let leveledUpCount = 0;
+            for (const hero of heroesBought) {
+                const progress = addHeroXp(hero, 0);
+                if (progress.leveledUp) {
+                    leveledUpCount += 1;
+                }
+            }
+
+            if (leveledUpCount > 0) {
+                await redis.set(userKey, JSON.stringify(user));
+            }
+
             return res.json({
                 ok: true,
                 count: heroesBought.length,
+                leveledUpCount,
                 heroes: heroesBought
             });
 
@@ -640,11 +653,10 @@ async function start() {
 
         hero.Xp += Math.floor(xpToAdd);
 
-        const previousLevel = hero.Lvl;
-        const xpRequired = getHeroLevelUpXpRequired(hero.Lvl);
         let leveledUp = false;
+        const previousLevel = hero.Lvl;
 
-        if (hero.Xp >= xpRequired) {
+        while (hero.Xp >= getHeroLevelUpXpRequired(hero.Lvl)) {
             hero.Lvl += 1;
             hero.Xp = 0;
             hero.HpMax = (hero.HpMax ?? 0) + 50;
