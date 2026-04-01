@@ -230,19 +230,20 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            const userPatched = ensureUserHeroStatUpPoints(user);
+            const progressSynced = syncUserHeroesProgress(user);
 
             const heroesBought = Array.isArray(user.heroesBought)
                 ? user.heroesBought
                 : [];
 
-            if (userPatched) {
+            if (progressSynced.changed) {
                 await redis.set(userKey, JSON.stringify(user));
             }
 
             return res.json({
                 ok: true,
                 count: heroesBought.length,
+                leveledUpCount: progressSynced.leveledUpCount,
                 statUpPoints: heroesBought.reduce(
                     (sum, hero) => sum + (Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0),
                     0
@@ -375,19 +376,20 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            const userPatched = ensureUserHeroStatUpPoints(user);
+            const progressSynced = syncUserHeroesProgress(user);
 
             const equipmentHeroes = Array.isArray(user.equipmentHeroes)
                 ? user.equipmentHeroes
                 : [];
 
-            if (userPatched) {
+            if (progressSynced.changed) {
                 await redis.set(userKey, JSON.stringify(user));
             }
 
             return res.json({
                 ok: true,
                 count: equipmentHeroes.length,
+                leveledUpCount: progressSynced.leveledUpCount,
                 equipmentHeroes: equipmentHeroes
             });
 
@@ -653,19 +655,20 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            const userPatched = ensureUserHeroStatUpPoints(user);
+            const progressSynced = syncUserHeroesProgress(user);
 
             const heroesBought = Array.isArray(user.heroesBought)
                 ? user.heroesBought
                 : [];
 
-            if (userPatched) {
+            if (progressSynced.changed) {
                 await redis.set(userKey, JSON.stringify(user));
             }
 
             return res.json({
                 ok: true,
                 count: heroesBought.length,
+                leveledUpCount: progressSynced.leveledUpCount,
                 statUpPoints: heroesBought.reduce(
                     (sum, hero) => sum + (Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0),
                     0
@@ -969,6 +972,41 @@ async function start() {
         ensureHeroList(user.equipmentHeroes);
 
         return changed;
+    }
+
+    function syncUserHeroesProgress(user) {
+        let changed = ensureUserHeroStatUpPoints(user);
+        let leveledUpCount = 0;
+
+        const syncHeroList = (heroes) => {
+            if (!Array.isArray(heroes)) {
+                return;
+            }
+
+            for (const hero of heroes) {
+                const previousLevel = Number.isFinite(hero.Lvl) ? hero.Lvl : 1;
+                const previousStatUpPoints = Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0;
+                const progress = addHeroXp(hero, 0);
+
+                if (progress.leveledUp) {
+                    leveledUpCount += 1;
+                    changed = true;
+                    continue;
+                }
+
+                if (hero.Lvl !== previousLevel || hero.StatUpPoints !== previousStatUpPoints) {
+                    changed = true;
+                }
+            }
+        };
+
+        syncHeroList(user.heroesBought);
+        syncHeroList(user.equipmentHeroes);
+
+        return {
+            changed,
+            leveledUpCount
+        };
     }
 
     function mulberry32(a) {
