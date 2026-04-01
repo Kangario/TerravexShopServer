@@ -35,6 +35,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
+            const userPatched = ensureUserHeroStatUpPoints(user);
             const now = Date.now();
             const UPDATE_INTERVAL = 6000 * 100;
 
@@ -55,6 +56,10 @@ async function start() {
                 user.lastShopUpdate = now;
                 user.shopSeed = shopSeed;
 
+                await redis.set(userKey, JSON.stringify(user));
+            }
+            
+            if (fromCache && userPatched) {
                 await redis.set(userKey, JSON.stringify(user));
             }
             
@@ -121,8 +126,12 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
+            const userPatched = ensureUserHeroStatUpPoints(user);
 
             if (!user.shopSeed) {
+                if (userPatched) {
+                    await redis.set(userKey, JSON.stringify(user));
+                }
                 return res.status(400).json({ error: "Shop not generated yet" });
             }
 
@@ -184,6 +193,7 @@ async function start() {
 
             user.heroesBought.push({
                 ...foundHero,
+                StatUpPoints: 0,
                 InstanceId: crypto.randomUUID(),
                 boughtAt: Date.now(),
                 price
@@ -220,27 +230,23 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
+            const userPatched = ensureUserHeroStatUpPoints(user);
 
             const heroesBought = Array.isArray(user.heroesBought)
                 ? user.heroesBought
                 : [];
 
-            let leveledUpCount = 0;
-            for (const hero of heroesBought) {
-                const progress = addHeroXp(hero, 0);
-                if (progress.leveledUp) {
-                    leveledUpCount += 1;
-                }
-            }
-
-            if (leveledUpCount > 0) {
+            if (userPatched) {
                 await redis.set(userKey, JSON.stringify(user));
             }
 
             return res.json({
                 ok: true,
                 count: heroesBought.length,
-                leveledUpCount,
+                statUpPoints: heroesBought.reduce(
+                    (sum, hero) => sum + (Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0),
+                    0
+                ),
                 heroes: heroesBought
             });
 
@@ -369,10 +375,15 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
+            const userPatched = ensureUserHeroStatUpPoints(user);
 
             const equipmentHeroes = Array.isArray(user.equipmentHeroes)
                 ? user.equipmentHeroes
                 : [];
+
+            if (userPatched) {
+                await redis.set(userKey, JSON.stringify(user));
+            }
 
             return res.json({
                 ok: true,
@@ -483,6 +494,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
+            ensureUserHeroStatUpPoints(user);
 
             if (!Array.isArray(user.heroesBought)) {
                 user.heroesBought = [];
@@ -520,6 +532,8 @@ async function start() {
                 previousLevel: progress.previousLevel,
                 currentLevel: hero.Lvl,
                 currentXp: hero.Xp,
+                statUpPoints: hero.StatUpPoints ?? 0,
+                statPointsGained: Math.max(0, hero.Lvl - progress.previousLevel) * 5,
                 nextLevelXpRequired: getHeroLevelUpXpRequired(hero.Lvl)
             });
         } catch (err) {
@@ -528,6 +542,139 @@ async function start() {
                 ok: false,
                 error: "Internal server error"
             });
+        }
+    });
+
+    app.post("/hero/statup", async (req, res) => {
+        try {
+            const userId = req.body.userId ?? req.body.UserId;
+            const instanceId = req.body.instanceId ?? req.body.InstanceId;
+
+            if (!userId || !instanceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "UserId and InstanceId required"
+                });
+            }
+
+            const requestedUpgrades = getRequestedHeroStatUpgrades(req.body);
+            if (requestedUpgrades.error) {
+                return res.status(400).json({
+                    ok: false,
+                    error: requestedUpgrades.error
+                });
+            }
+
+            if (Object.keys(requestedUpgrades.stats).length === 0) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "At least one stat upgrade must be greater than 0"
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found"
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+            ensureUserHeroStatUpPoints(user);
+
+            if (!Array.isArray(user.heroesBought)) {
+                user.heroesBought = [];
+            }
+
+            if (!Array.isArray(user.equipmentHeroes)) {
+                user.equipmentHeroes = [];
+            }
+
+            let hero = user.heroesBought.find(h => h.InstanceId === instanceId);
+            let location = "heroesBought";
+
+            if (!hero) {
+                hero = user.equipmentHeroes.find(h => h.InstanceId === instanceId);
+                location = "equipmentHeroes";
+            }
+
+            if (!hero) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Hero with this InstanceId not found"
+                });
+            }
+
+            const upgradeResult = applyHeroStatUpgrades(hero, requestedUpgrades.stats);
+
+            if (!upgradeResult.ok) {
+                return res.status(400).json({
+                    ok: false,
+                    error: upgradeResult.error,
+                    details: upgradeResult.details
+                });
+            }
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                location,
+                hero,
+                spentStatUpPoints: upgradeResult.spentStatUpPoints,
+                statUpPointsLeft: hero.StatUpPoints ?? 0,
+                appliedUpgrades: upgradeResult.appliedUpgrades
+            });
+        } catch (err) {
+            console.error("[Hero] StatUp error:", err);
+            return res.status(500).json({
+                ok: false,
+                error: "Internal server error"
+            });
+        }
+    });
+
+    app.post("/hero/character", async (req, res) => {
+        try {
+            const { userId } = req.body;
+
+            if (!userId) {
+                return res.status(400).json({ error: "userId required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+
+            if (!rawUser) {
+                return res.status(404).json({ error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+            const userPatched = ensureUserHeroStatUpPoints(user);
+
+            const heroesBought = Array.isArray(user.heroesBought)
+                ? user.heroesBought
+                : [];
+
+            if (userPatched) {
+                await redis.set(userKey, JSON.stringify(user));
+            }
+
+            return res.json({
+                ok: true,
+                count: heroesBought.length,
+                statUpPoints: heroesBought.reduce(
+                    (sum, hero) => sum + (Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0),
+                    0
+                ),
+                heroes: heroesBought
+            });
+        } catch (err) {
+            console.error("[Hero] Character error:", err);
+            return res.status(500).json({ error: "Internal server error" });
         }
     });
 
@@ -610,6 +757,7 @@ async function start() {
             DeathCharges: 3,
             Lvl: 1,
             Xp: 0,
+            StatUpPoints: 0,
             Initiative: Math.floor(40 + rng() * 60),
 
             HpMax: Math.floor(8 + rng() * 7),
@@ -651,6 +799,10 @@ async function start() {
             hero.Xp = 0;
         }
 
+        if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
+            hero.StatUpPoints = 0;
+        }
+
         hero.Xp += Math.floor(xpToAdd);
 
         let leveledUp = false;
@@ -659,15 +811,7 @@ async function start() {
         while (hero.Xp >= getHeroLevelUpXpRequired(hero.Lvl)) {
             hero.Lvl += 1;
             hero.Xp = 0;
-            hero.HpMax = (hero.HpMax ?? 0) + 50;
-            hero.DamageP = (hero.DamageP ?? 0) + 25;
-            hero.DamageM = (hero.DamageM ?? 0) + 25;
-            hero.MoveCost = (hero.MoveCost ?? 0) + 1;
-            hero.AttackRange = (hero.AttackRange ?? 0) + 1;
-
-            if (Number.isFinite(hero.Hp)) {
-                hero.Hp += 50;
-            }
+            hero.StatUpPoints += 5;
 
             leveledUp = true;
         }
@@ -676,6 +820,155 @@ async function start() {
             leveledUp,
             previousLevel
         };
+    }
+
+    function getHeroStatUpgradeRules() {
+        return {
+            HpMax: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            DefenceP: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            DefenceM: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            DamageP: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            DamageM: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            AttackRange: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            MoveCost: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            },
+            MaxAP: {
+                pointCostPerUnit: 1,
+                maxIncreasePerRequest: 1000
+            }
+        };
+    }
+
+    function getRequestedHeroStatUpgrades(body) {
+        const rules = getHeroStatUpgradeRules();
+        const stats = {};
+
+        for (const statName of Object.keys(rules)) {
+            if (body[statName] === undefined) {
+                continue;
+            }
+
+            const value = Number(body[statName]);
+            if (!Number.isInteger(value) || value < 0) {
+                return {
+                    error: `${statName} must be a non-negative integer`
+                };
+            }
+
+            if (value > 0) {
+                stats[statName] = value;
+            }
+        }
+
+        return { stats };
+    }
+
+    function applyHeroStatUpgrades(hero, requestedStats) {
+        if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
+            hero.StatUpPoints = 0;
+        }
+
+        const rules = getHeroStatUpgradeRules();
+        const appliedUpgrades = {};
+        let spentStatUpPoints = 0;
+
+        for (const [statName, increaseBy] of Object.entries(requestedStats)) {
+            const rule = rules[statName];
+
+            if (!rule) {
+                return {
+                    ok: false,
+                    error: `Stat ${statName} is not supported`
+                };
+            }
+
+            if (increaseBy > rule.maxIncreasePerRequest) {
+                return {
+                    ok: false,
+                    error: `Too many points requested for ${statName}`,
+                    details: {
+                        stat: statName,
+                        requested: increaseBy,
+                        maxIncreasePerRequest: rule.maxIncreasePerRequest
+                    }
+                };
+            }
+
+            if (!Number.isFinite(hero[statName])) {
+                hero[statName] = 0;
+            }
+
+            spentStatUpPoints += increaseBy * rule.pointCostPerUnit;
+            appliedUpgrades[statName] = {
+                increaseBy,
+                pointCostPerUnit: rule.pointCostPerUnit
+            };
+        }
+
+        if (spentStatUpPoints > hero.StatUpPoints) {
+            return {
+                ok: false,
+                error: "Not enough StatUpPoints",
+                details: {
+                    requiredStatUpPoints: spentStatUpPoints,
+                    currentStatUpPoints: hero.StatUpPoints
+                }
+            };
+        }
+
+        for (const [statName, increaseBy] of Object.entries(requestedStats)) {
+            hero[statName] += increaseBy;
+        }
+
+        hero.StatUpPoints -= spentStatUpPoints;
+
+        return {
+            ok: true,
+            spentStatUpPoints,
+            appliedUpgrades
+        };
+    }
+
+    function ensureUserHeroStatUpPoints(user) {
+        let changed = false;
+
+        const ensureHeroList = (heroes) => {
+            if (!Array.isArray(heroes)) {
+                return;
+            }
+
+            for (const hero of heroes) {
+                if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
+                    hero.StatUpPoints = 0;
+                    changed = true;
+                }
+            }
+        };
+
+        ensureHeroList(user.heroesBought);
+        ensureHeroList(user.equipmentHeroes);
+
+        return changed;
     }
 
     function mulberry32(a) {
