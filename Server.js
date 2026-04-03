@@ -3,6 +3,14 @@ const crypto = require("crypto");
 const { createClient } = require("redis");
 const namePatterns = require("./namePatterns.json");
 
+process.on("unhandledRejection", (reason) => {
+    console.error("[Fatal] Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+    console.error("[Fatal] Uncaught exception:", error);
+});
+
 async function start() {
     const app = express();
     app.use(express.json());
@@ -1139,4 +1147,7 @@ async function start() {
 }
 
 
-start();
+start().catch((error) => {
+    console.error("[Startup] Failed to start server:", error);
+    process.exit(1);
+});
