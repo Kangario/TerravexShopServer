@@ -1,26 +1,75 @@
 const express = require("express");
+const crypto = require("crypto");
 const { createClient } = require("redis");
 const namePatterns = require("./namePatterns.json");
 
 async function start() {
-    const redis = createClient({
-        socket: {
-            host: "redis-17419.c328.europe-west3-1.gce.cloud.redislabs.com",
-            port: 17419,
-        },
-        password: "af0gO9r23iS9w7sYd8T0XtQktQR0ZXnl",
-    });
-
-    redis.on("error", (err) => console.error("Redis error:", err));
-    await redis.connect();
-
-    console.log("✅ Redis connected");
-
     const app = express();
     app.use(express.json());
 
+    const PORT = Number(process.env.PORT) || 8080;
+    const HOST = process.env.HOST || "0.0.0.0";
+    const REDIS_HOST = process.env.REDIS_HOST || "redis-17419.c328.europe-west3-1.gce.cloud.redislabs.com";
+    const REDIS_PORT = Number(process.env.REDIS_PORT) || 17419;
+    const REDIS_PASSWORD = process.env.REDIS_PASSWORD || "af0gO9r23iS9w7sYd8T0XtQktQR0ZXnl";
+
+    const redis = createClient({
+        socket: {
+            host: REDIS_HOST,
+            port: REDIS_PORT,
+        },
+        password: REDIS_PASSWORD,
+    });
+
+    let redisConnectPromise = null;
+
+    redis.on("error", (err) => console.error("Redis error:", err));
+
+    async function getRedis() {
+        if (redis.isOpen) {
+            return redis;
+        }
+
+        if (!redisConnectPromise) {
+            redisConnectPromise = redis.connect()
+                .then(() => {
+                    console.log("✅ Redis connected");
+                    return redis;
+                })
+                .catch((err) => {
+                    redisConnectPromise = null;
+                    throw err;
+                });
+        }
+
+        return redisConnectPromise;
+    }
+
+    async function requireRedis(res) {
+        try {
+            return await getRedis();
+        } catch (err) {
+            console.error("[Redis] Connection failed:", err);
+            res.status(503).json({ error: "Redis unavailable" });
+            return null;
+        }
+    }
+
+    app.get("/", async (req, res) => {
+        res.json({
+            ok: true,
+            service: "terravexshop",
+            redisConnected: redis.isOpen
+        });
+    });
+
     app.post("/shop/update", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId } = req.body;
 
             if (!userId) {
@@ -107,6 +156,11 @@ async function start() {
 
     app.post("/shop/buy", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId, heroId } = req.body;
 
             if (!userId || heroId === undefined) {
@@ -216,6 +270,11 @@ async function start() {
 
     app.post("/shop/bought", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId } = req.body;
 
             if (!userId) {
@@ -259,6 +318,11 @@ async function start() {
 
     app.post("/hero/equip", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId, instanceId } = req.body;
 
             if (!userId || !instanceId) {
@@ -362,6 +426,11 @@ async function start() {
     
     app.post("/hero/equipment", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId } = req.body;
 
             if (!userId) {
@@ -402,6 +471,11 @@ async function start() {
 
     app.post("/hero/unequip", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId, instanceId } = req.body;
 
             if (!userId || !instanceId) {
@@ -468,6 +542,11 @@ async function start() {
 
     app.post("/hero/xp", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId, instanceId, xp } = req.body;
 
             if (!userId || !instanceId || xp === undefined) {
@@ -549,6 +628,11 @@ async function start() {
 
     app.post("/hero/statup", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const userId = req.body.userId ?? req.body.UserId;
             const instanceId = req.body.instanceId ?? req.body.InstanceId;
 
@@ -641,6 +725,11 @@ async function start() {
 
     app.post("/hero/character", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId } = req.body;
 
             if (!userId) {
@@ -683,6 +772,11 @@ async function start() {
 
     app.post("/user/resources", async (req, res) => {
         try {
+            const redis = await requireRedis(res);
+            if (!redis) {
+                return;
+            }
+
             const { userId } = req.body;
 
             if (!userId) {
@@ -710,10 +804,12 @@ async function start() {
         }
     });
 
+    app.listen(PORT, HOST, () => {
+        console.log(`🚀 Server started on http://${HOST}:${PORT}`);
+    });
 
-
-    app.listen(3000, () => {
-        console.log("🚀 Server started on http://localhost:3000");
+    getRedis().catch((err) => {
+        console.error("[Redis] Initial connection failed:", err);
     });
 
     function calculateHeroPrice(hero) {
