@@ -1,4 +1,4 @@
-const { HERO_ATTRIBUTE_KEYS, cloneHeroDefaults, getHeroAttributeUpgradeRules } = require("./heroConfig");
+const { HERO_ATTRIBUTE_KEYS, HERO_DERIVED_BASE, cloneHeroDefaults, getHeroAttributeUpgradeRules } = require("./heroConfig");
 
 function getHeroLevelUpXpRequired(level) {
   return 50 * level;
@@ -30,6 +30,37 @@ function addHeroXp(hero, xpToAdd) {
   }
 
   return { leveledUp, previousLevel };
+}
+
+function recomputeDerivedStatsFromAttributes(hero) {
+  if (!hero || typeof hero !== "object") return false;
+  if (!hero.Attributes || typeof hero.Attributes !== "object") return false;
+
+  const str = Number(hero.Attributes.Strength) || 0;
+  const dex = Number(hero.Attributes.Dexterity) || 0;
+  const con = Number(hero.Attributes.Constitution) || 0;
+  const intl = Number(hero.Attributes.Intelligence) || 0;
+  const wis = Number(hero.Attributes.Wisdom) || 0;
+
+  const next = {
+    DamageP: HERO_DERIVED_BASE.DamageP + str * 3,
+    DamageM: HERO_DERIVED_BASE.DamageM + intl * 3,
+    HpMax: HERO_DERIVED_BASE.HpMax + con * 10,
+    DefenceP: HERO_DERIVED_BASE.DefenceP + con * 1,
+    DefenceM: HERO_DERIVED_BASE.DefenceM + wis * 1,
+    Initiative: HERO_DERIVED_BASE.Initiative + Math.floor(dex / 2),
+    MoveCost: HERO_DERIVED_BASE.MoveCost + Math.floor(dex / 10),
+  };
+
+  let changed = false;
+  for (const [k, v] of Object.entries(next)) {
+    if (hero[k] !== v) {
+      hero[k] = v;
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 function normalizeHero(hero) {
@@ -108,6 +139,11 @@ function normalizeHero(hero) {
       hero.EquipmentSlots.Armor = { Head: null, Body: null, Legs: null };
       changed = true;
     }
+  }
+
+  // Derived stats always come from attributes.
+  if (recomputeDerivedStatsFromAttributes(hero)) {
+    changed = true;
   }
 
   return { hero, changed };
@@ -197,6 +233,8 @@ function applyHeroAttributeUpgrades(hero, requestedStats) {
 
   hero.StatUpPoints -= spentStatUpPoints;
 
+  recomputeDerivedStatsFromAttributes(hero);
+
   return { ok: true, spentStatUpPoints, appliedUpgrades };
 }
 
@@ -251,6 +289,7 @@ function syncUserHeroesProgress(user) {
 
 module.exports = {
   HERO_ATTRIBUTE_KEYS,
+  recomputeDerivedStatsFromAttributes,
   normalizeHero,
   normalizeUserHeroes,
   getHeroLevelUpXpRequired,

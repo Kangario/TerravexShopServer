@@ -12,14 +12,14 @@ const HERO_DEFAULTS = Object.freeze({
   Lvl: 1,
   Xp: 0,
   StatUpPoints: 0,
-  Initiative: 40,
+  Initiative: 0,
 
-  HpMax: 8,
+  HpMax: 0,
   DefenceP: 0,
   DefenceM: 0,
 
-  DamageP: 10,
-  DamageM: 10,
+  DamageP: 0,
+  DamageM: 0,
 
   AttackRange: 1,
   MoveCost: 1,
@@ -47,6 +47,16 @@ const HERO_DEFAULTS = Object.freeze({
   }),
 });
 
+const HERO_DERIVED_BASE = Object.freeze({
+  Initiative: HERO_DEFAULTS.Initiative,
+  MoveCost: HERO_DEFAULTS.MoveCost,
+  HpMax: HERO_DEFAULTS.HpMax,
+  DefenceP: HERO_DEFAULTS.DefenceP,
+  DefenceM: HERO_DEFAULTS.DefenceM,
+  DamageP: HERO_DEFAULTS.DamageP,
+  DamageM: HERO_DEFAULTS.DamageM,
+});
+
 function cloneHeroDefaults() {
   // Deep clone only where needed (arrays/objects). Numbers are primitive.
   return {
@@ -57,6 +67,17 @@ function cloneHeroDefaults() {
       Armor: { Head: null, Body: null, Legs: null },
     },
     Attributes: { ...HERO_DEFAULTS.Attributes },
+  };
+}
+
+function rollAttributes(rng) {
+  const roll0to10 = () => Math.floor(rng() * 11); // inclusive 0..10
+  return {
+    Strength: roll0to10(),
+    Dexterity: roll0to10(),
+    Constitution: roll0to10(),
+    Intelligence: roll0to10(),
+    Wisdom: roll0to10(),
   };
 }
 
@@ -74,7 +95,9 @@ function getHeroAttributeUpgradeRules() {
 module.exports = {
   HERO_ATTRIBUTE_KEYS,
   HERO_DEFAULTS,
+  HERO_DERIVED_BASE,
   cloneHeroDefaults,
+  rollAttributes,
   getHeroAttributeUpgradeRules,
 };
 

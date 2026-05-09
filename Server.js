@@ -9,8 +9,9 @@ const {
     getHeroLevelUpXpRequired,
     getRequestedHeroAttributeUpgrades,
     applyHeroAttributeUpgrades,
+    recomputeDerivedStatsFromAttributes,
 } = require("./hero/heroProgression");
-const { cloneHeroDefaults } = require("./hero/heroConfig");
+const { cloneHeroDefaults, rollAttributes } = require("./hero/heroConfig");
 
 process.on("unhandledRejection", (reason) => {
     console.error("[Fatal] Unhandled promise rejection:", reason);
@@ -873,7 +874,7 @@ async function start() {
         const races = ["human", "elf", "orc"];
         const race = races[Math.floor(rng() * races.length)];
         const name = generateName(rng, race);
-        return {
+        const hero = {
             Id: heroId,
             Name: name,
 
@@ -882,20 +883,20 @@ async function start() {
             Lvl: defaults.Lvl,
             Xp: defaults.Xp,
             StatUpPoints: defaults.StatUpPoints,
-            Initiative: Math.floor(40 + rng() * 60),
+            Initiative: defaults.Initiative,
 
-            HpMax: Math.floor(8 + rng() * 7),
-            DefenceP: Math.floor(rng() * 40),
-            DefenceM: Math.floor(rng() * 40),
+            HpMax: defaults.HpMax,
+            DefenceP: defaults.DefenceP,
+            DefenceM: defaults.DefenceM,
             
-            DamageP: Math.floor(10 + rng() * 20),
-            DamageM: Math.floor(10 + rng() * 20),
+            DamageP: defaults.DamageP,
+            DamageM: defaults.DamageM,
             
             AttackRange: Math.floor(rng() * 10) + 1,
-            MoveCost: Math.floor(rng() * 3) + 1,
+            MoveCost: defaults.MoveCost,
             MaxAP: defaults.MaxAP,
             
-            Attributes: { ...defaults.Attributes },
+            Attributes: rollAttributes(rng),
             
             Skills: [],
             EquipmentSlots: {
@@ -910,6 +911,10 @@ async function start() {
                 }
             }
         };
+
+        // Derived stats from attributes overwrite base fields
+        recomputeDerivedStatsFromAttributes(hero);
+        return hero;
     }
 
     function getRequestedHeroStatUpgrades(body) {
