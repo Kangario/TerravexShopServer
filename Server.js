@@ -2,6 +2,15 @@ const express = require("express");
 const crypto = require("crypto");
 const { createClient } = require("redis");
 const namePatterns = require("./namePatterns.json");
+const {
+    normalizeUserHeroes,
+    syncUserHeroesProgress,
+    addHeroXp,
+    getHeroLevelUpXpRequired,
+    getRequestedHeroAttributeUpgrades,
+    applyHeroAttributeUpgrades,
+} = require("./hero/heroProgression");
+const { cloneHeroDefaults } = require("./hero/heroConfig");
 
 process.on("unhandledRejection", (reason) => {
     console.error("[Fatal] Unhandled promise rejection:", reason);
@@ -92,7 +101,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            const userPatched = ensureUserHeroStatUpPoints(user);
+            const userPatched = normalizeUserHeroes(user).changed;
             const now = Date.now();
             const UPDATE_INTERVAL = 6000 * 100;
 
@@ -188,7 +197,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            const userPatched = ensureUserHeroStatUpPoints(user);
+            const userPatched = normalizeUserHeroes(user).changed;
 
             if (!user.shopSeed) {
                 if (userPatched) {
@@ -583,7 +592,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            ensureUserHeroStatUpPoints(user);
+            normalizeUserHeroes(user);
 
             if (!Array.isArray(user.heroesBought)) {
                 user.heroesBought = [];
@@ -677,7 +686,7 @@ async function start() {
             }
 
             const user = JSON.parse(rawUser);
-            ensureUserHeroStatUpPoints(user);
+            normalizeUserHeroes(user);
 
             if (!Array.isArray(user.heroesBought)) {
                 user.heroesBought = [];
@@ -702,7 +711,7 @@ async function start() {
                 });
             }
 
-            const upgradeResult = applyHeroStatUpgrades(hero, requestedUpgrades.stats);
+            const upgradeResult = applyHeroAttributeUpgrades(hero, requestedUpgrades.stats);
 
             if (!upgradeResult.ok) {
                 return res.status(400).json({
@@ -835,6 +844,13 @@ async function start() {
         
         price += hero.MaxAP * 20;
         price += (2 - hero.MoveCost) * 10;
+        
+        const attrs = hero.Attributes || {};
+        price += (Number(attrs.Strength) || 0) * 10;
+        price += (Number(attrs.Dexterity) || 0) * 10;
+        price += (Number(attrs.Constitution) || 0) * 10;
+        price += (Number(attrs.Intelligence) || 0) * 10;
+        price += (Number(attrs.Wisdom) || 0) * 10;
 
         return Math.floor(price);
     }
@@ -852,6 +868,7 @@ async function start() {
     }
 
     function generateHero(rng, index, shopSeed) {
+        const defaults = cloneHeroDefaults();
         const heroId = hashSeed(`${shopSeed}:${index}`);
         const races = ["human", "elf", "orc"];
         const race = races[Math.floor(rng() * races.length)];
@@ -861,10 +878,10 @@ async function start() {
             Name: name,
 
             Gender: Math.floor(rng() * 2),
-            DeathCharges: 3,
-            Lvl: 1,
-            Xp: 0,
-            StatUpPoints: 0,
+            DeathCharges: defaults.DeathCharges,
+            Lvl: defaults.Lvl,
+            Xp: defaults.Xp,
+            StatUpPoints: defaults.StatUpPoints,
             Initiative: Math.floor(40 + rng() * 60),
 
             HpMax: Math.floor(8 + rng() * 7),
@@ -876,7 +893,9 @@ async function start() {
             
             AttackRange: Math.floor(rng() * 10) + 1,
             MoveCost: Math.floor(rng() * 3) + 1,
-            MaxAP: 6,
+            MaxAP: defaults.MaxAP,
+            
+            Attributes: { ...defaults.Attributes },
             
             Skills: [],
             EquipmentSlots: {
@@ -893,224 +912,9 @@ async function start() {
         };
     }
 
-    function getHeroLevelUpXpRequired(level) {
-        return 50 * level;
-    }
-
-    function addHeroXp(hero, xpToAdd) {
-        if (!Number.isFinite(hero.Lvl) || hero.Lvl < 1) {
-            hero.Lvl = 1;
-        }
-
-        if (!Number.isFinite(hero.Xp) || hero.Xp < 0) {
-            hero.Xp = 0;
-        }
-
-        if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
-            hero.StatUpPoints = 0;
-        }
-
-        hero.Xp += Math.floor(xpToAdd);
-
-        let leveledUp = false;
-        const previousLevel = hero.Lvl;
-
-        while (hero.Xp >= getHeroLevelUpXpRequired(hero.Lvl)) {
-            hero.Lvl += 1;
-            hero.Xp = 0;
-            hero.StatUpPoints += 5;
-
-            leveledUp = true;
-        }
-
-        return {
-            leveledUp,
-            previousLevel
-        };
-    }
-
-    function getHeroStatUpgradeRules() {
-        return {
-            HpMax: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            DefenceP: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            DefenceM: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            DamageP: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            DamageM: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            AttackRange: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            MoveCost: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            },
-            MaxAP: {
-                pointCostPerUnit: 1,
-                maxIncreasePerRequest: 1000
-            }
-        };
-    }
-
     function getRequestedHeroStatUpgrades(body) {
-        const rules = getHeroStatUpgradeRules();
-        const stats = {};
-
-        for (const statName of Object.keys(rules)) {
-            if (body[statName] === undefined) {
-                continue;
-            }
-
-            const value = Number(body[statName]);
-            if (!Number.isInteger(value) || value < 0) {
-                return {
-                    error: `${statName} must be a non-negative integer`
-                };
-            }
-
-            if (value > 0) {
-                stats[statName] = value;
-            }
-        }
-
-        return { stats };
-    }
-
-    function applyHeroStatUpgrades(hero, requestedStats) {
-        if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
-            hero.StatUpPoints = 0;
-        }
-
-        const rules = getHeroStatUpgradeRules();
-        const appliedUpgrades = {};
-        let spentStatUpPoints = 0;
-
-        for (const [statName, increaseBy] of Object.entries(requestedStats)) {
-            const rule = rules[statName];
-
-            if (!rule) {
-                return {
-                    ok: false,
-                    error: `Stat ${statName} is not supported`
-                };
-            }
-
-            if (increaseBy > rule.maxIncreasePerRequest) {
-                return {
-                    ok: false,
-                    error: `Too many points requested for ${statName}`,
-                    details: {
-                        stat: statName,
-                        requested: increaseBy,
-                        maxIncreasePerRequest: rule.maxIncreasePerRequest
-                    }
-                };
-            }
-
-            if (!Number.isFinite(hero[statName])) {
-                hero[statName] = 0;
-            }
-
-            spentStatUpPoints += increaseBy * rule.pointCostPerUnit;
-            appliedUpgrades[statName] = {
-                increaseBy,
-                pointCostPerUnit: rule.pointCostPerUnit
-            };
-        }
-
-        if (spentStatUpPoints > hero.StatUpPoints) {
-            return {
-                ok: false,
-                error: "Not enough StatUpPoints",
-                details: {
-                    requiredStatUpPoints: spentStatUpPoints,
-                    currentStatUpPoints: hero.StatUpPoints
-                }
-            };
-        }
-
-        for (const [statName, increaseBy] of Object.entries(requestedStats)) {
-            hero[statName] += increaseBy;
-        }
-
-        hero.StatUpPoints -= spentStatUpPoints;
-
-        return {
-            ok: true,
-            spentStatUpPoints,
-            appliedUpgrades
-        };
-    }
-
-    function ensureUserHeroStatUpPoints(user) {
-        let changed = false;
-
-        const ensureHeroList = (heroes) => {
-            if (!Array.isArray(heroes)) {
-                return;
-            }
-
-            for (const hero of heroes) {
-                if (!Number.isFinite(hero.StatUpPoints) || hero.StatUpPoints < 0) {
-                    hero.StatUpPoints = 0;
-                    changed = true;
-                }
-            }
-        };
-
-        ensureHeroList(user.heroesBought);
-        ensureHeroList(user.equipmentHeroes);
-
-        return changed;
-    }
-
-    function syncUserHeroesProgress(user) {
-        let changed = ensureUserHeroStatUpPoints(user);
-        let leveledUpCount = 0;
-
-        const syncHeroList = (heroes) => {
-            if (!Array.isArray(heroes)) {
-                return;
-            }
-
-            for (const hero of heroes) {
-                const previousLevel = Number.isFinite(hero.Lvl) ? hero.Lvl : 1;
-                const previousStatUpPoints = Number.isFinite(hero.StatUpPoints) ? hero.StatUpPoints : 0;
-                const progress = addHeroXp(hero, 0);
-
-                if (progress.leveledUp) {
-                    leveledUpCount += 1;
-                    changed = true;
-                    continue;
-                }
-
-                if (hero.Lvl !== previousLevel || hero.StatUpPoints !== previousStatUpPoints) {
-                    changed = true;
-                }
-            }
-        };
-
-        syncHeroList(user.heroesBought);
-        syncHeroList(user.equipmentHeroes);
-
-        return {
-            changed,
-            leveledUpCount
-        };
+        // backward-compatible wrapper name used by endpoint
+        return getRequestedHeroAttributeUpgrades(body);
     }
 
     function mulberry32(a) {
