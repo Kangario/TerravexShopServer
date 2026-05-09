@@ -71,7 +71,7 @@ function cloneHeroDefaults() {
 }
 
 function rollAttributes(rng) {
-  const roll0to10 = () => Math.floor(rng() * 11); // inclusive 0..10
+  const roll0to10 = () => Math.floor(rng() * 10) + 1; // inclusive 0..10
   return {
     Strength: roll0to10(),
     Dexterity: roll0to10(),
