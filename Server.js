@@ -2,6 +2,8 @@ const express = require("express");
 const crypto = require("crypto");
 const { createClient } = require("redis");
 const namePatterns = require("./namePatterns.json");
+const { EFFECTS_CATALOG } = require("./shared/effectsCatalog");
+const { SKILLS_CATALOG } = require("./shared/skillsCatalog");
 const {
     normalizeUserHeroes,
     syncUserHeroesProgress,
@@ -11,7 +13,7 @@ const {
     applyHeroAttributeUpgrades,
     recomputeDerivedStatsFromAttributes,
 } = require("./hero/heroProgression");
-const { cloneHeroDefaults, rollAttributes } = require("./hero/heroConfig");
+const { HERO_ATTRIBUTE_KEYS, cloneHeroDefaults, rollAttributes } = require("./hero/heroConfig");
 
 process.on("unhandledRejection", (reason) => {
     console.error("[Fatal] Unhandled promise rejection:", reason);
@@ -24,6 +26,14 @@ process.on("uncaughtException", (error) => {
 async function start() {
     const app = express();
     app.use(express.json());
+
+    function logShop(event, payload) {
+        try {
+            console.log(`[Shop] ${event}`, JSON.stringify(payload));
+        } catch {
+            console.log(`[Shop] ${event}`, payload);
+        }
+    }
 
     const PORT = Number(process.env.PORT) || 8080;
     const HOST = process.env.HOST || "0.0.0.0";
@@ -130,6 +140,13 @@ async function start() {
                 await redis.set(userKey, JSON.stringify(user));
             }
             
+            logShop("update.begin", {
+                userId,
+                fromCache,
+                shopSeed,
+                lastShopUpdate: user.lastShopUpdate,
+            });
+
             const rng = mulberry32(shopSeed);
 
             const boughtIds = new Set(
@@ -155,13 +172,46 @@ async function start() {
                 heroes.push(hero);
             }
 
+            // Items & skills are generated from derived seeds (stable, independent of hero RNG usage).
+            const itemsRng = mulberry32(hashSeed(`${shopSeed}:items`));
+            const skillsRng = mulberry32(hashSeed(`${shopSeed}:skills`));
 
+            const itemsBoughtIds = new Set((user.itemsBought || []).map((it) => it.Id));
+            const skillsBoughtIds = new Set((user.skillsBought || []).map((sk) => sk.Id));
+
+            const items = [];
+            for (let i = 0; i < 6; i++) {
+                const item = generateItem(itemsRng, i, shopSeed);
+                if (itemsBoughtIds.has(item.Id)) {
+                    continue;
+                }
+                items.push(item);
+            }
+
+            const skills = [];
+            const usedSkillIds = new Set();
+            for (let i = 0; i < 6; i++) {
+                const offer = generateSkillOffer(skillsRng, i, shopSeed, usedSkillIds);
+                if (!offer) continue;
+                if (skillsBoughtIds.has(offer.Id)) continue;
+                skills.push(offer);
+            }
+
+            logShop("update.generated", {
+                userId,
+                shopSeed,
+                heroes: heroes.length,
+                items: items.length,
+                skills: skills.length,
+            });
 
             const shopResponse = {
                 ok: true,
                 fromCache,
                 shopSeed,
-                heroes
+                heroes,
+                items,
+                skills
             };
 
             return res.json(shopResponse);
@@ -228,6 +278,8 @@ async function start() {
                 });
             }
 
+            logShop("buyHero.begin", { userId, heroId: parsedHeroId, shopSeed: user.shopSeed });
+
             // 🔁 Восстанавливаем магазин по сиду
             const rng = mulberry32(user.shopSeed);
 
@@ -273,6 +325,8 @@ async function start() {
 
             await redis.set(userKey, JSON.stringify(user));
 
+            logShop("buyHero.ok", { userId, heroId: parsedHeroId, price, goldLeft: user.gold });
+
             return res.json({
                 ok: true,
                 hero: foundHero,
@@ -283,6 +337,182 @@ async function start() {
         } catch (err) {
             console.error("[Shop] Buy error:", err);
             return res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
+    app.post("/shop/buyItem", async (req, res) => {
+        try {
+            const redis = await requireRedis(res);
+            if (!redis) return;
+
+            const { userId, itemId } = req.body;
+            if (!userId || itemId === undefined) {
+                return res.status(400).json({ ok: false, error: "userId and itemId required" });
+            }
+
+            const parsedItemId = Number(itemId);
+            if (!Number.isInteger(parsedItemId)) {
+                return res.status(400).json({ ok: false, error: "Invalid itemId" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+            if (!rawUser) {
+                return res.status(404).json({ ok: false, error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+            const userPatched = normalizeUserHeroes(user).changed;
+
+            if (!user.shopSeed) {
+                if (userPatched) await redis.set(userKey, JSON.stringify(user));
+                return res.status(400).json({ ok: false, error: "Shop not generated yet" });
+            }
+
+            const now = Date.now();
+            const UPDATE_INTERVAL = 6000 * 100;
+            if (!user.lastShopUpdate || now - user.lastShopUpdate > UPDATE_INTERVAL) {
+                return res.status(400).json({ ok: false, error: "Shop expired, please refresh shop" });
+            }
+
+            if (!Array.isArray(user.itemsBought)) user.itemsBought = [];
+            if (user.itemsBought.some((it) => it.Id === parsedItemId)) {
+                return res.status(400).json({ ok: false, error: "Item already bought" });
+            }
+
+            logShop("buyItem.begin", { userId, itemId: parsedItemId, shopSeed: user.shopSeed });
+
+            const itemsRng = mulberry32(hashSeed(`${user.shopSeed}:items`));
+            let foundItem = null;
+            for (let i = 0; i < 6; i++) {
+                const item = generateItem(itemsRng, i, user.shopSeed);
+                if (item.Id === parsedItemId) {
+                    foundItem = item;
+                    break;
+                }
+            }
+
+            if (!foundItem) {
+                return res.status(400).json({ ok: false, error: "Item not found in current shop" });
+            }
+
+            const price = foundItem.Price;
+            if ((user.gold ?? 0) < price) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Not enough gold",
+                    requiredGold: price,
+                    currentGold: user.gold ?? 0,
+                });
+            }
+
+            user.gold -= price;
+            user.itemsBought.push({
+                ...foundItem,
+                InstanceId: crypto.randomUUID(),
+                boughtAt: Date.now(),
+                price,
+            });
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            logShop("buyItem.ok", { userId, itemId: parsedItemId, price, goldLeft: user.gold });
+
+            return res.json({
+                ok: true,
+                item: foundItem,
+                price,
+                goldLeft: user.gold,
+            });
+        } catch (err) {
+            console.error("[Shop] BuyItem error:", err);
+            return res.status(500).json({ ok: false, error: "Internal server error" });
+        }
+    });
+
+    app.post("/shop/buySkill", async (req, res) => {
+        try {
+            const redis = await requireRedis(res);
+            if (!redis) return;
+
+            const { userId, skillId } = req.body;
+            if (!userId || !skillId) {
+                return res.status(400).json({ ok: false, error: "userId and skillId required" });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+            if (!rawUser) {
+                return res.status(404).json({ ok: false, error: "User not found" });
+            }
+
+            const user = JSON.parse(rawUser);
+            const userPatched = normalizeUserHeroes(user).changed;
+
+            if (!user.shopSeed) {
+                if (userPatched) await redis.set(userKey, JSON.stringify(user));
+                return res.status(400).json({ ok: false, error: "Shop not generated yet" });
+            }
+
+            const now = Date.now();
+            const UPDATE_INTERVAL = 6000 * 100;
+            if (!user.lastShopUpdate || now - user.lastShopUpdate > UPDATE_INTERVAL) {
+                return res.status(400).json({ ok: false, error: "Shop expired, please refresh shop" });
+            }
+
+            if (!Array.isArray(user.skillsBought)) user.skillsBought = [];
+            if (user.skillsBought.some((sk) => sk.Id === skillId)) {
+                return res.status(400).json({ ok: false, error: "Skill already bought" });
+            }
+
+            logShop("buySkill.begin", { userId, skillId, shopSeed: user.shopSeed });
+
+            const skillsRng = mulberry32(hashSeed(`${user.shopSeed}:skills`));
+            const usedSkillIds = new Set();
+            let foundSkill = null;
+            for (let i = 0; i < 6; i++) {
+                const offer = generateSkillOffer(skillsRng, i, user.shopSeed, usedSkillIds);
+                if (offer && offer.Id === skillId) {
+                    foundSkill = offer;
+                    break;
+                }
+            }
+
+            if (!foundSkill) {
+                return res.status(400).json({ ok: false, error: "Skill not found in current shop" });
+            }
+
+            const price = foundSkill.Price;
+            if ((user.gold ?? 0) < price) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Not enough gold",
+                    requiredGold: price,
+                    currentGold: user.gold ?? 0,
+                });
+            }
+
+            user.gold -= price;
+            user.skillsBought.push({
+                ...foundSkill,
+                InstanceId: crypto.randomUUID(),
+                boughtAt: Date.now(),
+                price,
+            });
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            logShop("buySkill.ok", { userId, skillId, price, goldLeft: user.gold });
+
+            return res.json({
+                ok: true,
+                skill: foundSkill,
+                price,
+                goldLeft: user.gold,
+            });
+        } catch (err) {
+            console.error("[Shop] BuySkill error:", err);
+            return res.status(500).json({ ok: false, error: "Internal server error" });
         }
     });
 
@@ -866,6 +1096,117 @@ async function start() {
         }
 
         return { seed, heroes };
+    }
+
+    function randIntInclusive(rng, min, max) {
+        return Math.floor(rng() * (max - min + 1)) + min;
+    }
+
+    function pickOne(rng, arr) {
+        return arr[Math.floor(rng() * arr.length)];
+    }
+
+    function generateItemName(rng) {
+        const base = pickOne(rng, ["Меч", "Лук", "Арбалет", "Кинжал", "Посох", "Топор", "Копьё"]);
+        const suffix = pickOne(rng, [
+            "Эрадина",
+            "бездны",
+            "царей",
+            "демона",
+            "пепла",
+            "клятвы",
+            "теней",
+            "дракона",
+            "льда",
+        ]);
+        return `${base} ${suffix}`;
+    }
+
+    function generateItem(itemsRng, index, shopSeed) {
+        const itemId = hashSeed(`${shopSeed}:item:${index}`);
+
+        const statsCount = randIntInclusive(itemsRng, 0, 5);
+        const available = [...HERO_ATTRIBUTE_KEYS];
+        const stats = [];
+
+        for (let i = 0; i < statsCount && available.length > 0; i++) {
+            const keyIndex = Math.floor(itemsRng() * available.length);
+            const key = available.splice(keyIndex, 1)[0];
+            const value = randIntInclusive(itemsRng, -5, 15);
+            stats.push({ Key: key, Value: value });
+        }
+
+        const effectRoll = itemsRng();
+        const effect = effectRoll < 0.3 ? pickOne(itemsRng, EFFECTS_CATALOG) : null;
+
+        const skillRoll = itemsRng();
+        const skill = skillRoll < 0.2 ? pickOne(itemsRng, SKILLS_CATALOG) : null;
+
+        const item = {
+            Id: itemId,
+            Name: generateItemName(itemsRng),
+            Stats: stats,
+            UniqueEffect: effect
+                ? {
+                    Id: effect.Id,
+                    Name: effect.Name,
+                    Modifiers: effect.Modifiers,
+                    Description: effect.Description,
+                    Cost: effect.Cost,
+                }
+                : null,
+            Skill: skill
+                ? {
+                    Id: skill.Id,
+                    Name: skill.Name,
+                    CooldownTurns: skill.CooldownTurns,
+                    Payload: skill.Payload,
+                    Description: skill.Description,
+                    Cost: skill.Cost,
+                }
+                : null,
+        };
+
+        item.Price = calculateItemPrice(item);
+        return item;
+    }
+
+    function calculateItemPrice(item) {
+        let price = 100;
+
+        for (const st of item.Stats || []) {
+            const v = Number(st.Value) || 0;
+            if (v > 0) price += v * 25;
+            if (v < 0) price -= Math.abs(v) * 10;
+        }
+
+        if (item.UniqueEffect?.Cost) price += Number(item.UniqueEffect.Cost) || 0;
+        if (item.Skill?.Cost) price += Number(item.Skill.Cost) || 0;
+
+        price = Math.floor(price);
+        return Math.max(20, price);
+    }
+
+    function generateSkillOffer(skillsRng, index, shopSeed, usedSkillIds) {
+        if (!Array.isArray(SKILLS_CATALOG) || SKILLS_CATALOG.length === 0) return null;
+
+        for (let attempts = 0; attempts < 10; attempts++) {
+            const skill = pickOne(skillsRng, SKILLS_CATALOG);
+            if (usedSkillIds?.has(skill.Id)) continue;
+            if (usedSkillIds) usedSkillIds.add(skill.Id);
+
+            return {
+                Id: skill.Id,
+                Name: skill.Name,
+                CooldownTurns: skill.CooldownTurns,
+                Payload: skill.Payload,
+                Description: skill.Description,
+                Price: skill.Cost,
+                OfferId: hashSeed(`${shopSeed}:skillOffer:${index}:${skill.Id}`),
+            };
+        }
+
+        return null;
     }
 
     function generateHero(rng, index, shopSeed) {
