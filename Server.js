@@ -2,8 +2,8 @@ const express = require("express");
 const crypto = require("crypto");
 const { createClient } = require("redis");
 const namePatterns = require("./namePatterns.json");
-const { EFFECTS_CATALOG } = require("./shared/effectsCatalog");
 const { SKILLS_CATALOG } = require("./shared/skillsCatalog");
+const { ITEMS_CATALOG } = require("./shared/itemsCatalog");
 const {
     normalizeUserHeroes,
     syncUserHeroesProgress,
@@ -176,16 +176,30 @@ async function start() {
             const itemsRng = mulberry32(hashSeed(`${shopSeed}:items`));
             const skillsRng = mulberry32(hashSeed(`${shopSeed}:skills`));
 
-            const itemsBoughtIds = new Set((user.itemsBought || []).map((it) => it.Id));
-            const skillsBoughtIds = new Set((user.skillsBought || []).map((sk) => sk.Id));
+            const itemsBoughtIds = new Set(
+                (user.itemsBought || []).map((it) => it.ID ?? it.Id)
+            );
+            const itemsEquippedIds = new Set(
+                (user.itemsEquipped || []).map((it) => it.ID ?? it.Id)
+            );
+            const skillsBoughtIds = new Set((user.skillsBought || []).map((sk) => sk.ID));
+
+            // Deterministic shuffle based on shopSeed.
+            const itemsPool = [...ITEMS_CATALOG];
+            for (let j = itemsPool.length - 1; j > 0; j--) {
+                const k = Math.floor(itemsRng() * (j + 1));
+                [itemsPool[j], itemsPool[k]] = [itemsPool[k], itemsPool[j]];
+            }
 
             const items = [];
-            for (let i = 0; i < 6; i++) {
-                const item = generateItem(itemsRng, i, shopSeed);
-                if (itemsBoughtIds.has(item.Id)) {
+            const itemSlots = Math.min(6, itemsPool.length);
+            for (let i = 0; i < itemSlots; i++) {
+                const itemTemplate = itemsPool[i];
+                if (!itemTemplate) continue;
+                if (itemsBoughtIds.has(itemTemplate.ID) || itemsEquippedIds.has(itemTemplate.ID)) {
                     continue;
                 }
-                items.push(item);
+                items.push(generateItemFromTemplate(itemTemplate));
             }
 
             const skills = [];
@@ -193,7 +207,7 @@ async function start() {
             for (let i = 0; i < 6; i++) {
                 const offer = generateSkillOffer(skillsRng, i, shopSeed, usedSkillIds);
                 if (!offer) continue;
-                if (skillsBoughtIds.has(offer.Id)) continue;
+                if (skillsBoughtIds.has(offer.ID)) continue;
                 skills.push(offer);
             }
 
@@ -349,9 +363,7 @@ async function start() {
             if (!userId || itemId === undefined) {
                 return res.status(400).json({ ok: false, error: "userId and itemId required" });
             }
-
-            const parsedItemId = Number(itemId);
-            if (!Number.isInteger(parsedItemId)) {
+            if (typeof itemId !== "string" || itemId.trim().length === 0) {
                 return res.status(400).json({ ok: false, error: "Invalid itemId" });
             }
 
@@ -376,17 +388,28 @@ async function start() {
             }
 
             if (!Array.isArray(user.itemsBought)) user.itemsBought = [];
-            if (user.itemsBought.some((it) => it.Id === parsedItemId)) {
+            if (!Array.isArray(user.itemsEquipped)) user.itemsEquipped = [];
+            const alreadyOwned = user.itemsBought.some((it) => (it.ID ?? it.Id) === itemId)
+                || user.itemsEquipped.some((it) => (it.ID ?? it.Id) === itemId);
+            if (alreadyOwned) {
                 return res.status(400).json({ ok: false, error: "Item already bought" });
             }
 
-            logShop("buyItem.begin", { userId, itemId: parsedItemId, shopSeed: user.shopSeed });
+            logShop("buyItem.begin", { userId, itemId, shopSeed: user.shopSeed });
 
             const itemsRng = mulberry32(hashSeed(`${user.shopSeed}:items`));
+            const itemsPool = [...ITEMS_CATALOG];
+            for (let j = itemsPool.length - 1; j > 0; j--) {
+                const k = Math.floor(itemsRng() * (j + 1));
+                [itemsPool[j], itemsPool[k]] = [itemsPool[k], itemsPool[j]];
+            }
+
             let foundItem = null;
-            for (let i = 0; i < 6; i++) {
-                const item = generateItem(itemsRng, i, user.shopSeed);
-                if (item.Id === parsedItemId) {
+            const itemSlots = Math.min(6, itemsPool.length);
+            for (let i = 0; i < itemSlots; i++) {
+                const itemTemplate = itemsPool[i];
+                const item = generateItemFromTemplate(itemTemplate);
+                if (item.ID === itemId) {
                     foundItem = item;
                     break;
                 }
@@ -416,7 +439,7 @@ async function start() {
 
             await redis.set(userKey, JSON.stringify(user));
 
-            logShop("buyItem.ok", { userId, itemId: parsedItemId, price, goldLeft: user.gold });
+            logShop("buyItem.ok", { userId, itemId, price, goldLeft: user.gold });
 
             return res.json({
                 ok: true,
@@ -461,7 +484,7 @@ async function start() {
             }
 
             if (!Array.isArray(user.skillsBought)) user.skillsBought = [];
-            if (user.skillsBought.some((sk) => sk.Id === skillId)) {
+            if (user.skillsBought.some((sk) => sk.ID === skillId)) {
                 return res.status(400).json({ ok: false, error: "Skill already bought" });
             }
 
@@ -472,7 +495,7 @@ async function start() {
             let foundSkill = null;
             for (let i = 0; i < 6; i++) {
                 const offer = generateSkillOffer(skillsRng, i, user.shopSeed, usedSkillIds);
-                if (offer && offer.Id === skillId) {
+                if (offer && offer.ID === skillId) {
                     foundSkill = offer;
                     break;
                 }
@@ -785,6 +808,131 @@ async function start() {
                 ok: false,
                 error: "Internal server error"
             });
+        }
+    });
+
+    app.post("/item/equip", async (req, res) => {
+        try {
+            const redis = await requireRedis(res);
+            if (!redis) return;
+
+            const { userId, instanceId } = req.body;
+            if (!userId || !instanceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "userId and instanceId required",
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found",
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!Array.isArray(user.itemsBought)) user.itemsBought = [];
+            if (!Array.isArray(user.itemsEquipped)) user.itemsEquipped = [];
+
+            const MAX_EQUIPPED_ITEMS = 6;
+
+            const alreadyEquipped = user.itemsEquipped.some((it) => it.InstanceId === instanceId);
+            if (alreadyEquipped) {
+                return res.status(400).json({ ok: false, error: "Item already equipped" });
+            }
+
+            if (user.itemsEquipped.length >= MAX_EQUIPPED_ITEMS) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "No free item slots",
+                    maxSlots: MAX_EQUIPPED_ITEMS,
+                });
+            }
+
+            const itemIndex = user.itemsBought.findIndex((it) => it.InstanceId === instanceId);
+            if (itemIndex === -1) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Item with this InstanceId not found in itemsBought",
+                });
+            }
+
+            const [equippedItem] = user.itemsBought.splice(itemIndex, 1);
+            user.itemsEquipped.push({
+                ...equippedItem,
+                equippedAt: Date.now(),
+            });
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                message: "Item equipped successfully",
+                item: equippedItem,
+                itemsBought: user.itemsBought,
+                itemsEquipped: user.itemsEquipped,
+            });
+        } catch (err) {
+            console.error("[Item] Equip error:", err);
+            return res.status(500).json({ ok: false, error: "Internal server error" });
+        }
+    });
+
+    app.post("/item/unequip", async (req, res) => {
+        try {
+            const redis = await requireRedis(res);
+            if (!redis) return;
+
+            const { userId, instanceId } = req.body;
+            if (!userId || !instanceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "userId and instanceId required",
+                });
+            }
+
+            const userKey = `user:${userId}`;
+            const rawUser = await redis.get(userKey);
+            if (!rawUser) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "User not found",
+                });
+            }
+
+            const user = JSON.parse(rawUser);
+
+            if (!Array.isArray(user.itemsBought)) user.itemsBought = [];
+            if (!Array.isArray(user.itemsEquipped)) user.itemsEquipped = [];
+
+            const equipIndex = user.itemsEquipped.findIndex((it) => it.InstanceId === instanceId);
+            if (equipIndex === -1) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Item with this InstanceId not found in itemsEquipped",
+                });
+            }
+
+            const [unequippedItem] = user.itemsEquipped.splice(equipIndex, 1);
+            delete unequippedItem.equippedAt;
+            user.itemsBought.push(unequippedItem);
+
+            await redis.set(userKey, JSON.stringify(user));
+
+            return res.json({
+                ok: true,
+                message: "Item unequipped successfully",
+                item: unequippedItem,
+                itemsBought: user.itemsBought,
+                itemsEquipped: user.itemsEquipped,
+            });
+        } catch (err) {
+            console.error("[Item] Unequip error:", err);
+            return res.status(500).json({ ok: false, error: "Internal server error" });
         }
     });
 
@@ -1106,85 +1254,38 @@ async function start() {
         return arr[Math.floor(rng() * arr.length)];
     }
 
-    function generateItemName(rng) {
-        const base = pickOne(rng, ["Меч", "Лук", "Арбалет", "Кинжал", "Посох", "Топор", "Копьё"]);
-        const suffix = pickOne(rng, [
-            "Эрадина",
-            "бездны",
-            "царей",
-            "демона",
-            "пепла",
-            "клятвы",
-            "теней",
-            "дракона",
-            "льда",
-        ]);
-        return `${base} ${suffix}`;
+    function calculateEffectPrice(effect) {
+        if (!effect) return 0;
+        const value = Number(effect.Value) || 0;
+        const duration = Number(effect.Duration) || 0;
+
+        // Simple heuristic pricing based on effect parameters.
+        // (Execution logic is not part of this repo, so we keep pricing data-driven and lightweight.)
+        let typeMult = 1;
+        if (effect.Type === "Heal") typeMult = 0.8;
+        if (effect.Type === "DeBuff") typeMult = 0.9;
+        if (effect.Type === "Buff") typeMult = 1.0;
+        if (effect.Type === "Damage") typeMult = 1.1;
+
+        return Math.floor((Math.abs(value) * 3 + duration * 8) * typeMult);
     }
 
-    function generateItem(itemsRng, index, shopSeed) {
-        const itemId = hashSeed(`${shopSeed}:item:${index}`);
+    function calculateItemPriceFromEffects(itemTemplate) {
+        const base = 100;
+        const passive = calculateEffectPrice(itemTemplate.PassiveEffect);
+        const active = calculateEffectPrice(itemTemplate.ActiveEffect);
+        return Math.max(20, base + passive + active);
+    }
 
-        const statsCount = randIntInclusive(itemsRng, 0, 5);
-        const available = [...HERO_ATTRIBUTE_KEYS];
-        const stats = [];
-
-        for (let i = 0; i < statsCount && available.length > 0; i++) {
-            const keyIndex = Math.floor(itemsRng() * available.length);
-            const key = available.splice(keyIndex, 1)[0];
-            const value = randIntInclusive(itemsRng, -5, 15);
-            stats.push({ Key: key, Value: value });
-        }
-
-        const effectRoll = itemsRng();
-        const effect = effectRoll < 0.3 ? pickOne(itemsRng, EFFECTS_CATALOG) : null;
-
-        const skillRoll = itemsRng();
-        const skill = skillRoll < 0.2 ? pickOne(itemsRng, SKILLS_CATALOG) : null;
-
-        const item = {
-            Id: itemId,
-            Name: generateItemName(itemsRng),
-            Stats: stats,
-            UniqueEffect: effect
-                ? {
-                    Id: effect.Id,
-                    Name: effect.Name,
-                    Modifiers: effect.Modifiers,
-                    Description: effect.Description,
-                    Cost: effect.Cost,
-                }
-                : null,
-            Skill: skill
-                ? {
-                    Id: skill.Id,
-                    Name: skill.Name,
-                    CooldownTurns: skill.CooldownTurns,
-                    Payload: skill.Payload,
-                    Description: skill.Description,
-                    Cost: skill.Cost,
-                }
-                : null,
+    function generateItemFromTemplate(itemTemplate) {
+        return {
+            ID: itemTemplate.ID,
+            Name: itemTemplate.Name,
+            Type: itemTemplate.Type,
+            PassiveEffect: itemTemplate.PassiveEffect,
+            ActiveEffect: itemTemplate.ActiveEffect,
+            Price: calculateItemPriceFromEffects(itemTemplate),
         };
-
-        item.Price = calculateItemPrice(item);
-        return item;
-    }
-
-    function calculateItemPrice(item) {
-        let price = 100;
-
-        for (const st of item.Stats || []) {
-            const v = Number(st.Value) || 0;
-            if (v > 0) price += v * 25;
-            if (v < 0) price -= Math.abs(v) * 10;
-        }
-
-        if (item.UniqueEffect?.Cost) price += Number(item.UniqueEffect.Cost) || 0;
-        if (item.Skill?.Cost) price += Number(item.Skill.Cost) || 0;
-
-        price = Math.floor(price);
-        return Math.max(20, price);
     }
 
     function generateSkillOffer(skillsRng, index, shopSeed, usedSkillIds) {
@@ -1192,17 +1293,20 @@ async function start() {
 
         for (let attempts = 0; attempts < 10; attempts++) {
             const skill = pickOne(skillsRng, SKILLS_CATALOG);
-            if (usedSkillIds?.has(skill.Id)) continue;
-            if (usedSkillIds) usedSkillIds.add(skill.Id);
+            if (usedSkillIds?.has(skill.ID)) continue;
+            if (usedSkillIds) usedSkillIds.add(skill.ID);
 
             return {
-                Id: skill.Id,
+                ID: skill.ID,
                 Name: skill.Name,
                 CooldownTurns: skill.CooldownTurns,
-                Payload: skill.Payload,
+                CasTime: skill.CasTime,
+                "Range/Target": skill["Range/Target"],
+                Tag: skill.Tag,
+                Effect: skill.Effect,
                 Description: skill.Description,
                 Price: skill.Cost,
-                OfferId: hashSeed(`${shopSeed}:skillOffer:${index}:${skill.Id}`),
+                OfferId: hashSeed(`${shopSeed}:skillOffer:${index}:${skill.ID}`),
             };
         }
 
