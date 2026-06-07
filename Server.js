@@ -1337,7 +1337,7 @@ async function start() {
             DamageP: defaults.DamageP,
             DamageM: defaults.DamageM,
             
-            AttackRange: Math.floor(rng() * 10) + 1,
+            AttackRange: 1,
             MoveCost: defaults.MoveCost,
             MaxAP: defaults.MaxAP,
             
