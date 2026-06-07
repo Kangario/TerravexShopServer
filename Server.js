@@ -149,23 +149,13 @@ async function start() {
 
             const rng = mulberry32(shopSeed);
 
-            const boughtIds = new Set(
-                (user.heroesBought || []).map(h => h.Id)
-            );
-
-            const equippedIds = new Set(
-                (user.equipmentHeroes || []).map(h => h.Id)
-            );
+            const unavailableHeroIds = getUnavailableShopHeroIds(user);
 
             const heroes = [];
             for (let i = 0; i < 6; i++) {
                 const hero = generateHero(rng, i, shopSeed);
                 
-                if (boughtIds.has(hero.Id)) {
-                    continue;
-                }
-                
-                if (equippedIds.has(hero.Id)) {
+                if (unavailableHeroIds.has(toHeroIdKey(hero.Id))) {
                     continue;
                 }
 
@@ -289,6 +279,14 @@ async function start() {
                 return res.status(400).json({
                     ok: false,
                     error: "Hero already bought"
+                });
+            }
+
+            const unavailableHeroIds = getUnavailableShopHeroIds(user);
+            if (unavailableHeroIds.has(toHeroIdKey(parsedHeroId))) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Hero is no longer available"
                 });
             }
 
@@ -1244,6 +1242,35 @@ async function start() {
         }
 
         return { seed, heroes };
+    }
+
+    function toHeroIdKey(heroId) {
+        return heroId === null || heroId === undefined ? null : String(heroId);
+    }
+
+    function addHeroIdToSet(set, heroId) {
+        const key = toHeroIdKey(heroId);
+        if (key !== null) {
+            set.add(key);
+        }
+    }
+
+    function getUnavailableShopHeroIds(user) {
+        const ids = new Set();
+
+        for (const hero of Array.isArray(user.heroesBought) ? user.heroesBought : []) {
+            addHeroIdToSet(ids, hero.Id ?? hero.id);
+        }
+
+        for (const hero of Array.isArray(user.equipmentHeroes) ? user.equipmentHeroes : []) {
+            addHeroIdToSet(ids, hero.Id ?? hero.id);
+        }
+
+        for (const heroId of Array.isArray(user.deadHeroIds) ? user.deadHeroIds : []) {
+            addHeroIdToSet(ids, heroId);
+        }
+
+        return ids;
     }
 
     function randIntInclusive(rng, min, max) {
